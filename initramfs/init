@@ -1,0 +1,43 @@
+#!/bin/busybox sh
+
+/bin/busybox --install -s /bin/
+/bin/busybox --install -s /sbin/
+mkdir /usr
+ln -s /bin /usr/bin
+ln -s /sbin /usr/sbin
+
+#Disable kernel messages from popping onto the screen
+echo 0 > /proc/sys/kernel/printk
+
+#Clear the screen
+clear
+
+#Create device nodes
+mknod -m 640 /dev/console c 5 1
+mknod -m 664 /dev/null c 1 3
+mdev -s
+
+mkdir -p /dev /proc /sys /run
+mount -n -t devtmpfs devtmpfs /dev
+mount -n -t proc     proc     /proc
+mount -n -t sysfs    sysfs    /sys
+mount -n -t tmpfs    tmpfs    /run
+
+#mount disk
+mkdir -p /rootfs
+mount /dev/sda2 /rootfs
+
+#Check if $init exists and is executable
+init="/sbin/init"
+if [[ -x "/rootfs/${init}" ]] ; then
+    #Unmount all other mounts so that the ram used by
+    #the initramfs can be cleared after switch_root
+    umount /sys /proc
+
+    #Switch to the new root and execute init
+    exec switch_root /rootfs "${init}"
+fi
+
+#This will only be run if the exec above failed
+echo "Failed to switch_root, dropping to a shell"
+exec /bin/sh
