@@ -1,40 +1,52 @@
 ### 制作内核
 在kernel.org下载内核源码并解压，进入源码目录编译内核
 ```
-wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.18.9.tar.xz
-tar Jxvf linux-5.18.9.tar.xz
-(cd linux-5.18.9 && make defconfig && make bzImage -j4)
+# 使用环境变量声明linux内核版本
+export KERNEL_VERSION=6.4.5
+# 下载linux内核源代码
+wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-${KERNEL_VERSION}.tar.xz
+# 解压源代码
+tar Jxvf linux-${KERNEL_VERSION}.tar.xz
+# 使用默认配置编译内核
+(cd linux-${KERNEL_VERSION} && make defconfig && make bzImage -j4)
 ```
 
 编译好的内核在arch/x86_64/boot/bzImage，可以尝试qemu虚拟机启动这个内核
 应该可以正常启动成功，但是最后会报错，这是正常情况
 
 ```
-qemi-system-x86_64 -kernel arch/x86_64/boot/bzImage
+qemu-system-x86_64 -kernel linux-${KERNEL_VERSION}-arch/x86_64/boot/bzImage
 ```
 
 ### 制作initramfs
 先准备一个busybox的二进制，可以直接下载编译好的二进制，也可以自己下载源码编译，编译的时候最好选择静态链接以免运行时找不到动态链接库
 ```
+# 下载busybox
 wget https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+# 为busybox添加可执行权限
 chmod +x busybox
 ```
 
 建立initramfs目录用来制作initramfs
+
+
+可以选择直接把busybox直接释放到bin目录，也可以在init脚本里释放，直接释放会多占点空间，init里释放多占点时间
+
 ```
+# 新建initramfs文件夹，并新建各种子文件夹
 mkdir initramfs
 (cd initramfs && mkdir -p bin dev etc lib mnt proc sbin sys tmp var)
+# 复制busybox到initramfs里面
 cp busybox initramfs/bin/
 ```
 
-写个简单的脚本到initramfs/init，用来测试一下
+简简单单写个脚本到initramfs/init，用来测试一下
 ```
 #!/bin/busybox sh
 
 /bin/busybox --install -s /bin/
 /bin/busybox --install -s /sbin/
 
-#Mount things needed by this script
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 
@@ -53,7 +65,7 @@ chmod +x initramfs/init
 
 此时可以用qemu启动，顺利执行到init脚本进入到busybox的sh了
 ```
-qemi-system-x86_64 -kernel arch/x86_64/boot/bzImage --initrd initramfz
+qemu-system-x86_64 -kernel linux-${KERNEL_VERSION}/arch/x86_64/boot/bzImage --initrd initramfz
 ```
 
 ### 制作rootfs
@@ -117,54 +129,55 @@ mkdir /usr
 ln -s /bin /usr/bin
 ln -s /sbin /usr/sbin
 
-#Disable kernel messages from popping onto the screen
+# 禁止kernel的日志输出到屏幕上
 echo 0 > /proc/sys/kernel/printk
 
-#Clear the screen
+# 清屏
 clear
 
-#Create device nodes
+# 创建各种设备节点
 mknod -m 640 /dev/console c 5 1
 mknod -m 664 /dev/null c 1 3
 mdev -s
 
+# 挂载运行时需要的几个目录
 mkdir -p /{dev,proc,sys,run}
 mount -n -t devtmpfs devtmpfs /dev
 mount -n -t proc     proc     /proc
 mount -n -t sysfs    sysfs    /sys
 mount -n -t tmpfs    tmpfs    /run
 
-#mount disk
+# 挂载磁盘和rootfs
 mkdir -p /rootfs
 mount /dev/sda2 /rootfs
 
-#Check if $init exists and is executable
+# 尝试使用rootfs里的/sbin/init脚本作为init进程
 init="/sbin/init"
 if [[ -x "/rootfs/${init}" ]] ; then
-    #Unmount all other mounts so that the ram used by
-    #the initramfs can be cleared after switch_root
     umount /sys /proc
-
-    #Switch to the new root and execute init
     exec switch_root /rootfs "${init}"
 fi
 
-#This will only be run if the exec above failed
+# 如果执行init进程失败，回退到启动busybox的sh
 echo "Failed to switch_root, dropping to a shell"
 exec /bin/sh
 ```
 
 
-重新打包initramfz和之前的bzImage一起复制到mnt/boot目录里去
+重新打包initramfz和之前的bzImage一起复制到mnt/boot目录里去，还有把busybox复制到rootfs里面去
 ```
+sudo cp linux-${KERNEL_VERSION}/arch/x86_64/boot/bzImage mnt/boot/
 (cd initramfs && find . | cpio -ov --format=newc | gzip -9 > ../initramfz)
-sudo cp linux-5.18.9/arch/x86_64/boot/bzImage mnt/boot/
 sudo cp initramfz mnt/boot/
+
+sudo mkdir mnt/bin
+sudo cp busybox mnt/bin
+./busybox --install -s mnt/bin
 ```
 
-安装grub2
+安装grub
 ```
-sudo grub2-install --boot-directory=./mnt/boot --root-directory=./mnt /dev/nbd0
+sudo grub-install --target=i386-pc --boot-directory=./mnt/boot --root-directory=./mnt /dev/nbd0
 ```
 
 简单写个配置到mnt/boot/grub2/grub.cfg
